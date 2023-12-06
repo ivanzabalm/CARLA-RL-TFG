@@ -1,40 +1,24 @@
-# Delete support pygame message
-from os import environ
-environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
-
 import sys
-sys.path.append('~/Documents/CARLA_0.9.14/PythonAPI/carla')
-from agents.navigation.global_route_planner import GlobalRoutePlanner
-
 import pygame
 import carla
 import numpy as np
 import random
+import math
+import cv2
+from agents.navigation.global_route_planner import GlobalRoutePlanner
 
-# Client and world connection
+# Carla path
+sys.path.append('~/Documents/CARLA_0.9.14/PythonAPI/carla')
+
+# Carla connection
 client = carla.Client('localhost', 2000)
-world = client.get_world()
 
-# Change world
-world = client.load_world('Town02')
+fail = 0
 
-# Set clear weather
-world.set_weather(carla.WeatherParameters.Default)
-
-# Spawn points
-spawn_points = world.get_map().get_spawn_points()
-start_point = spawn_points[21]
-
-# Vehicle slection and spawn
-vehicle_bp = world.get_blueprint_library().filter('vehicle.tesla.model3')[0]
-vehicle_bp.set_attribute('color', '0,0,0')
-vehicle = world.try_spawn_actor(vehicle_bp, start_point)
-
-# Render object to keep and pass the PyGame surface
-class RenderObject(object):
-    def __init__(self, width, height):
-        init_image = np.random.randint(0, 255, (height, width, 3), dtype='uint8')
-        self.surface = pygame.surfarray.make_surface(init_image.swapaxes(0, 1))
+# Collision callback
+def on_collision(event):
+    global fail
+    fail = 0
 
 # Camera sensor callback, reshapes raw data from camera into 2D RGB and applies to PyGame surface
 def pygame_callback(data, obj):
@@ -42,6 +26,12 @@ def pygame_callback(data, obj):
     img = img[:, :, :3]
     img = img[:, :, ::-1]
     obj.surface = pygame.surfarray.make_surface(img.swapaxes(0, 1))
+
+# Render object to keep and pass the PyGame surface
+class RenderObject(object):
+    def __init__(self, width, height):
+        init_image = np.random.randint(0, 255, (height, width, 3), dtype='uint8')
+        self.surface = pygame.surfarray.make_surface(init_image.swapaxes(0, 1))
 
 # Control object to manage vehicle controls
 class ControlObject(object):
@@ -93,21 +83,59 @@ class ControlObject(object):
         speed = 3.6 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
         return speed
 
-# Route Planner
-grp = GlobalRoutePlanner(world.get_map(), 2)
+# Basic world configuration
+def setup_carla_world():
+    world = client.get_world()
+    world = client.load_world('Town02')
+    world.set_weather(carla.WeatherParameters.Default)
 
-point_a = carla.Location(x=start_point.location.x, y=start_point.location.y, z=start_point.location.z)
-point_b = carla.Location(x=spawn_points[2].location.x, y=spawn_points[2].location.y, z=spawn_points[2].location.z)
+    return world
 
-route = grp.trace_route(point_a, point_b)
+world = setup_carla_world()
 
-# Select a vehicle to follow with the camera
-ego_vehicle = vehicle
+# Spawn points
+spawn_points = world.get_map().get_spawn_points()
+start_point = spawn_points[21]
+
+# Basic vehicle configuration
+def setup_agent_vehicle(start_point):
+    vehicle_bp = world.get_blueprint_library().filter('vehicle.tesla.model3')[0]
+    vehicle_bp.set_attribute('color', '0,0,0')
+    vehicle = world.try_spawn_actor(vehicle_bp, start_point)
+
+    return vehicle
+
+vehicle = setup_agent_vehicle(start_point)
+
+# Collision detector
+def setup_sensor_collision():
+    collision_sensor_bp = world.get_blueprint_library().find('sensor.other.collision')
+    collision_sensor_location = carla.Location(x=0.0, y=0.0, z=0.0)
+    collision_sensor = world.spawn_actor(collision_sensor_bp, carla.Transform(collision_sensor_location), attach_to=vehicle)
+
+    return collision_sensor
+
+collision_sensor = setup_sensor_collision()
+
+# Listen to sensor callback
+collision_sensor.listen(lambda event: on_collision(event))
+
+# Route maker from point A to point B
+def route_maker():
+    # Route Planner
+    grp = GlobalRoutePlanner(world.get_map(), 2)
+    point_a = carla.Location(x=start_point.location.x, y=start_point.location.y, z=start_point.location.z)
+    point_b = carla.Location(x=spawn_points[2].location.x, y=spawn_points[2].location.y, z=spawn_points[2].location.z)
+    route = grp.trace_route(point_a, point_b)
+
+    return route
+
+route = route_maker()
 
 # Initialise the camera floating behind the vehicle
 camera_init_trans = carla.Transform(carla.Location(x=-5, z=3), carla.Rotation(pitch=-20))
 camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
-camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=ego_vehicle)
+camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=vehicle)
 
 # Start camera with PyGame callback
 camera.listen(lambda image: pygame_callback(image, renderObject))
@@ -118,7 +146,7 @@ image_h = camera_bp.get_attribute("image_size_y").as_int()
 
 # Instantiate objects for rendering and vehicle control
 renderObject = RenderObject(image_w, image_h)
-controlObject = ControlObject(ego_vehicle)
+controlObject = ControlObject(vehicle)
 
 # Initialise the display
 pygame.init()
@@ -131,17 +159,19 @@ pygame.display.flip()
 
 # Game loop
 crashed = False
-
 font = pygame.font.Font(None, 36)
 
 # Target waypoint
-pos = 5
+pos = 4
 target_wp = route[pos]
-
 route_draw = route
 
-if target_wp in route:
-    print(route.index(target_wp))
+def euclidean_distance(p1_x, p1_y, p2_x, p2_y):
+    loc_p1 = np.array([p1_x, p1_y])
+    loc_p2 = np.array([p2_x, p2_y])
+    distance = np.linalg.norm(loc_p1 - loc_p2)
+
+    return distance
 
 while not crashed:
     # Advance the simulation time
@@ -150,17 +180,34 @@ while not crashed:
     # Update the display
     gameDisplay.blit(renderObject.surface, (0, 0))
     
-    # Closest waypoint
-    closest_wp = world.get_map().get_waypoint(ego_vehicle.get_transform().location)
+    # Closest waypoint (Avoid get lane change waypoints)
+    if world.get_map().get_waypoint(vehicle.get_transform().location).transform.get_forward_vector().get_vector_angle(route[pos][0].transform.get_forward_vector()) < 1.5:
+        closest_wp = world.get_map().get_waypoint(vehicle.get_transform().location)
 
-    # Calculate the distance between vehicle and waypoint 
-    vehicle_location_np = np.array([ego_vehicle.get_transform().location.x, ego_vehicle.get_transform().location.y])
-    waypoint_location_np = np.array([target_wp[0].transform.location.x, target_wp[0].transform.location.y])
-    distance = np.linalg.norm(vehicle_location_np - waypoint_location_np)
+    # Calculate the distance between vehicle and target   
+    distance_target = euclidean_distance(vehicle.get_transform().location.x, vehicle.get_transform().location.y, target_wp[0].transform.location.x, target_wp[0].transform.location.y)
+
+    # Calculate the distance between vehicle and lane center (car orientation)
+    vehicle_yaw = math.radians(vehicle.get_transform().rotation.yaw)
+
+    delta_x = closest_wp.transform.location.x - vehicle.get_transform().location.x
+    delta_y = closest_wp.transform.location.y - vehicle.get_transform().location.y
+
+    rotated_delta_x = delta_x * math.cos(vehicle_yaw) - delta_y * math.sin(vehicle_yaw)
+    rotated_delta_y = delta_x * math.sin(vehicle_yaw) + delta_y * math.cos(vehicle_yaw)
+
+    distance_center = math.sqrt(rotated_delta_x**2 + rotated_delta_y**2)
+
+    # Distance to center (y) > 1.2 => Car is out of the lane
+    if distance_center > 1.2:
+        fail = 1
 
     # When the car come to the target choose a new one
-    if distance <= 2:
-        pos = pos + 5
+    if distance_target <= 2:
+        if pos+4 > len(route)-1:
+            pos = len(route)-1
+        else:
+            pos = pos + 4
 
         # Change next target
         target_wp = route[pos]
@@ -169,14 +216,14 @@ while not crashed:
         route_draw = route_draw[pos:]
 
     # Car speed
-    velocidad_vehiculo = ego_vehicle.get_velocity()
-    velocidad_kmh = 3.6 * np.sqrt(velocidad_vehiculo.x**2 + velocidad_vehiculo.y**2)
+    vehicle_speed = vehicle.get_velocity()
+    velocidad_kmh = 3.6 * np.sqrt(vehicle_speed.x**2 + vehicle_speed.y**2)
 
     text = font.render(f"Speed: {velocidad_kmh:.2f} km/h", True, (255, 255, 255))
     gameDisplay.blit(text, (10, image_h - 40))
 
     # Vehicle location
-    vehicle_location = ego_vehicle.get_transform().location
+    vehicle_location = vehicle.get_transform().location
 
     # Car vector
     forward_vector = vehicle.get_transform().get_forward_vector()
@@ -187,13 +234,19 @@ while not crashed:
     angle = forward_vector.get_vector_angle(route[pos][0].transform.get_forward_vector())
 
     # Reward function parameters
-    print(f'Distance to target: {distance}    Angle(Car,Road): {angle}    Colision: {0}')
+    print(f'Dis target: {round(distance_target, 4)}    Dis center: {round(distance_center, 4)}    Angle(Car,Road): {round(angle, 4)}  Fail: {fail}   Speed: {velocidad_kmh:.2f} km/h')
 
     # Graphic draws
-    for i in range(pos+1,(pos+21)):
-        world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
-                           color=carla.Color(r=255, g=0, b=0),
-                           life_time=0.05)
+    if pos+10 > len(route)-1: 
+        for i in range(pos+1,len(route)):
+            world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                            color=carla.Color(r=255, g=0, b=0),
+                            life_time=0.05)
+    else:
+        for i in range(pos+1,pos+11):
+            world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                            color=carla.Color(r=255, g=0, b=0),
+                            life_time=0.05)
 
     world.debug.draw_point(carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
                            color=carla.Color(r=0, g=0, b=255),
@@ -225,17 +278,17 @@ while not crashed:
         if event.type == pygame.KEYUP:
             # TAB key switches vehicle
             if event.key == pygame.K_TAB:
-                ego_vehicle.set_autopilot(True)
-                ego_vehicle = vehicle
+                vehicle.set_autopilot(True)
+                vehicle = vehicle
                 # Ensure the vehicle is still alive (might have been destroyed)
-                if ego_vehicle.is_alive:
+                if vehicle.is_alive:
                     # Stop and remove the camera
                     camera.stop()
                     camera.destroy()
 
                     # Spawn a new camera and attach it to the new vehicle
-                    controlObject = ControlObject(ego_vehicle)
-                    camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=ego_vehicle)
+                    controlObject = ControlObject(vehicle)
+                    camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=vehicle)
                     camera.listen(lambda image: pygame_callback(image, renderObject))
 
                     # Update the PyGame window
