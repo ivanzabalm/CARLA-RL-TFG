@@ -7,13 +7,16 @@ import math
 import cv2
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
+# CARLA Debug Draw (to see waypoints and vectors)
+DEBUG_DRAW = False
+
+fail = 0
+
 # Carla path
 sys.path.append('~/Documents/CARLA_0.9.14/PythonAPI/carla')
 
 # Carla connection
 client = carla.Client('localhost', 2000)
-
-fail = 0
 
 # Collision callback
 def on_collision(event):
@@ -22,6 +25,9 @@ def on_collision(event):
 
 # Camera sensor callback, reshapes raw data from camera into 2D RGB and applies to PyGame surface
 def pygame_callback(data, obj):
+    # Encoded red channel convert to RGB to tag all elements in the scene
+    data.convert(carla.ColorConverter.CityScapesPalette)
+    
     img = np.reshape(np.copy(data.raw_data), (data.height, data.width, 4))
     img = img[:, :, :3]
     img = img[:, :, ::-1]
@@ -132,9 +138,9 @@ def route_maker():
 
 route = route_maker()
 
-# Initialise the camera floating behind the vehicle
-camera_init_trans = carla.Transform(carla.Location(x=-5, z=3), carla.Rotation(pitch=-20))
-camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
+# Camera config
+camera_init_trans = carla.Transform(carla.Location(x=1.0, y=0, z=1.40))
+camera_bp = world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
 camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=vehicle)
 
 # Start camera with PyGame callback
@@ -162,7 +168,7 @@ crashed = False
 font = pygame.font.Font(None, 36)
 
 # Target waypoint
-pos = 4
+pos = 2
 target_wp = route[pos]
 route_draw = route
 
@@ -198,16 +204,16 @@ while not crashed:
 
     distance_center = math.sqrt(rotated_delta_x**2 + rotated_delta_y**2)
 
-    # Distance to center (y) > 1.2 => Car is out of the lane
-    if distance_center > 1.2:
+    # Distance to center (y) > 1.3 => Car is out of the lane
+    if distance_center > 1.3:
         fail = 1
 
     # When the car come to the target choose a new one
     if distance_target <= 2:
-        if pos+4 > len(route)-1:
+        if pos+2 > len(route)-1:
             pos = len(route)-1
         else:
-            pos = pos + 4
+            pos = pos + 2
 
         # Change next target
         target_wp = route[pos]
@@ -219,47 +225,45 @@ while not crashed:
     vehicle_speed = vehicle.get_velocity()
     velocidad_kmh = 3.6 * np.sqrt(vehicle_speed.x**2 + vehicle_speed.y**2)
 
-    text = font.render(f"Speed: {velocidad_kmh:.2f} km/h", True, (255, 255, 255))
-    gameDisplay.blit(text, (10, image_h - 40))
-
     # Vehicle location
     vehicle_location = vehicle.get_transform().location
 
     # Car vector
     forward_vector = vehicle.get_transform().get_forward_vector()
-    scaled_forward_vector = forward_vector * 7.0
+    scaled_forward_vector = forward_vector * 5.0
     vector_end = vehicle_location + carla.Location(x=scaled_forward_vector.x, y=scaled_forward_vector.y, z=0.0)
 
     # Angle between car orientation (yaw) and road tangent (cos(x))
     angle = forward_vector.get_vector_angle(route[pos][0].transform.get_forward_vector())
 
     # Reward function parameters
-    print(f'Dis target: {round(distance_target, 4)}    Dis center: {round(distance_center, 4)}    Angle(Car,Road): {round(angle, 4)}  Fail: {fail}   Speed: {velocidad_kmh:.2f} km/h')
+    print(f'Dis target: {round(distance_target, 4)}    Dis center: {round(distance_center, 4)}    Angle(Car,Road): {round(angle, 4)}  Fail: {fail}   Speed: {velocidad_kmh:.2f} kmh')
 
     # Graphic draws
-    if pos+10 > len(route)-1: 
-        for i in range(pos+1,len(route)):
-            world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
-                            color=carla.Color(r=255, g=0, b=0),
-                            life_time=0.05)
-    else:
-        for i in range(pos+1,pos+11):
-            world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
-                            color=carla.Color(r=255, g=0, b=0),
-                            life_time=0.05)
+    if DEBUG_DRAW:
+        if pos+10 > len(route)-1: 
+            for i in range(pos+1,len(route)):
+                world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                                color=carla.Color(r=255, g=0, b=0),
+                                life_time=0.05)
+        else:
+            for i in range(pos+1,pos+11):
+                world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                                color=carla.Color(r=255, g=0, b=0),
+                                life_time=0.05)
 
-    world.debug.draw_point(carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
-                           color=carla.Color(r=0, g=0, b=255),
-                           life_time=0.05)
-        
-    world.debug.draw_arrow(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
-                           vector_end,
-                           life_time=0.04)
+        world.debug.draw_point(carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
+                            color=carla.Color(r=0, g=0, b=255),
+                            life_time=0.05)
+            
+        world.debug.draw_arrow(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
+                            vector_end,
+                            life_time=0.04)
 
-    world.debug.draw_arrow(carla.Location(x=closest_wp.transform.location.x, y=closest_wp.transform.location.y, z=0.8),
-                           carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
-                           color=carla.Color(r=0, g=0, b=255),
-                           life_time=0.04)
+        world.debug.draw_arrow(carla.Location(x=closest_wp.transform.location.x, y=closest_wp.transform.location.y, z=0.8),
+                            carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
+                            color=carla.Color(r=0, g=0, b=255),
+                            life_time=0.04)
 
     pygame.display.flip()
 

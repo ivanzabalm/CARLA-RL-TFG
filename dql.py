@@ -11,8 +11,8 @@ class DeepQAgent():
         # setting hyper-parameters and initialize Q-table
         pass
     
-    def _policy(self, mode, state, e_rate):
-        # return the action the Agent taken in a given state
+    def _nn_model(self, env):
+        # build nn model
         pass
         
     def train(self):
