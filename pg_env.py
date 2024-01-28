@@ -8,9 +8,7 @@ import cv2
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 # CARLA Debug Draw (to see waypoints and vectors)
-DEBUG_DRAW = False
-
-fail = 0
+DEBUG_DRAW = True
 
 # Carla path
 sys.path.append('~/Documents/CARLA_0.9.14/PythonAPI/carla')
@@ -21,12 +19,16 @@ client = carla.Client('localhost', 2000)
 # Collision callback
 def on_collision(event):
     global fail
-    fail = 0
+    fail = 1
+
+# Lane invsion callback
+def on_lane_invasion(event):
+    print(f"\nLane Invasion!\n")
 
 # Camera sensor callback, reshapes raw data from camera into 2D RGB and applies to PyGame surface
 def pygame_callback(data, obj):
-    # Encoded red channel convert to RGB to tag all elements in the scene
-    data.convert(carla.ColorConverter.CityScapesPalette)
+    # (Semantic segmentation) Encoded red channel convert to RGB to tag all elements in the scene
+    # data.convert(carla.ColorConverter.CityScapesPalette)
     
     img = np.reshape(np.copy(data.raw_data), (data.height, data.width, 4))
     img = img[:, :, :3]
@@ -101,7 +103,7 @@ world = setup_carla_world()
 
 # Spawn points
 spawn_points = world.get_map().get_spawn_points()
-start_point = spawn_points[21]
+start_point = spawn_points[19]
 
 # Basic vehicle configuration
 def setup_agent_vehicle(start_point):
@@ -113,34 +115,65 @@ def setup_agent_vehicle(start_point):
 
 vehicle = setup_agent_vehicle(start_point)
 
+# Euclidian distance formula
+def euclidean_distance(p1_x, p1_y, p2_x, p2_y):
+    loc_p1 = np.array([p1_x, p1_y])
+    loc_p2 = np.array([p2_x, p2_y])
+    distance = np.linalg.norm(loc_p1 - loc_p2)
+
+    return distance
+
 # Collision detector
 def setup_sensor_collision():
     collision_sensor_bp = world.get_blueprint_library().find('sensor.other.collision')
-    collision_sensor_location = carla.Location(x=0.0, y=0.0, z=0.0)
-    collision_sensor = world.spawn_actor(collision_sensor_bp, carla.Transform(collision_sensor_location), attach_to=vehicle)
+    collision_sensor = world.spawn_actor(collision_sensor_bp, carla.Transform(), attach_to=vehicle)
 
     return collision_sensor
 
 collision_sensor = setup_sensor_collision()
 
-# Listen to sensor callback
+# Listen to collision sensor callback
 collision_sensor.listen(lambda event: on_collision(event))
 
-# Route maker from point A to point B
-def route_maker():
+# Lane invasion detector
+def setup_sensor_lane_invasion():
+    lane_invasion_bp = world.get_blueprint_library().find('sensor.other.lane_invasion')
+    lane_invasion_sensor = world.spawn_actor(lane_invasion_bp, carla.Transform(), attach_to=vehicle)
+
+    return lane_invasion_sensor
+
+lane_invasion_sensor = setup_sensor_lane_invasion()
+
+# Listen to lane invasion sensor
+lane_invasion_sensor.listen(lambda event: on_lane_invasion(event))
+
+# Target waypoint index
+pos_wp_ends = 1
+
+# List of wp targets
+wp_ends = [19, 46, 33, 59]
+
+# Route maker from car location to destination
+def route_maker(i):
     # Route Planner
     grp = GlobalRoutePlanner(world.get_map(), 2)
-    point_a = carla.Location(x=start_point.location.x, y=start_point.location.y, z=start_point.location.z)
-    point_b = carla.Location(x=spawn_points[2].location.x, y=spawn_points[2].location.y, z=spawn_points[2].location.z)
-    route = grp.trace_route(point_a, point_b)
 
+    # Origin: Car position
+    origin = vehicle.get_transform().location       
+
+    # Route of waypoints (list)
+    route = grp.trace_route(origin, spawn_points[wp_ends[i]].location)
+    
     return route
 
-route = route_maker()
+route = route_maker(pos_wp_ends)
 
 # Camera config
-camera_init_trans = carla.Transform(carla.Location(x=1.0, y=0, z=1.40))
-camera_bp = world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
+
+# Third person camera
+camera_init_trans = carla.Transform(carla.Location(x=-5, z=3), carla.Rotation(pitch=-20))
+camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
+
 camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=vehicle)
 
 # Start camera with PyGame callback
@@ -168,16 +201,21 @@ crashed = False
 font = pygame.font.Font(None, 36)
 
 # Target waypoint
-pos = 2
+pos = 0
 target_wp = route[pos]
 route_draw = route
 
-def euclidean_distance(p1_x, p1_y, p2_x, p2_y):
-    loc_p1 = np.array([p1_x, p1_y])
-    loc_p2 = np.array([p2_x, p2_y])
-    distance = np.linalg.norm(loc_p1 - loc_p2)
+# Waypoint counter
+wp_count = -1
 
-    return distance
+# Lap counter
+lap_count = 0
+
+# Case of collision or lose wp target
+fail = 0
+
+# Traffic signs
+speed_limit = 30
 
 while not crashed:
     # Advance the simulation time
@@ -185,35 +223,27 @@ while not crashed:
 
     # Update the display
     gameDisplay.blit(renderObject.surface, (0, 0))
-    
-    # Closest waypoint (Avoid get lane change waypoints)
-    if world.get_map().get_waypoint(vehicle.get_transform().location).transform.get_forward_vector().get_vector_angle(route[pos][0].transform.get_forward_vector()) < 1.5:
-        closest_wp = world.get_map().get_waypoint(vehicle.get_transform().location)
 
     # Calculate the distance between vehicle and target   
     distance_target = euclidean_distance(vehicle.get_transform().location.x, vehicle.get_transform().location.y, target_wp[0].transform.location.x, target_wp[0].transform.location.y)
 
-    # Calculate the distance between vehicle and lane center (car orientation)
-    vehicle_yaw = math.radians(vehicle.get_transform().rotation.yaw)
-
-    delta_x = closest_wp.transform.location.x - vehicle.get_transform().location.x
-    delta_y = closest_wp.transform.location.y - vehicle.get_transform().location.y
-
-    rotated_delta_x = delta_x * math.cos(vehicle_yaw) - delta_y * math.sin(vehicle_yaw)
-    rotated_delta_y = delta_x * math.sin(vehicle_yaw) + delta_y * math.cos(vehicle_yaw)
-
-    distance_center = math.sqrt(rotated_delta_x**2 + rotated_delta_y**2)
-
-    # Distance to center (y) > 1.3 => Car is out of the lane
-    if distance_center > 1.3:
+    # The car lose the route
+    if distance_target > 6.5:
         fail = 1
 
     # When the car come to the target choose a new one
     if distance_target <= 2:
-        if pos+2 > len(route)-1:
-            pos = len(route)-1
+        if pos+1 > len(route)-1:
+            if pos_wp_ends == 3:
+                pos_wp_ends = 0
+                lap_count += 1
+            else:
+                pos_wp_ends += 1
+            
+            route = route_maker(pos_wp_ends)
+            pos = 0
         else:
-            pos = pos + 2
+            pos += 1
 
         # Change next target
         target_wp = route[pos]
@@ -221,9 +251,14 @@ while not crashed:
         # Cut route
         route_draw = route_draw[pos:]
 
+        wp_count += 1
+
     # Car speed
     vehicle_speed = vehicle.get_velocity()
     velocidad_kmh = 3.6 * np.sqrt(vehicle_speed.x**2 + vehicle_speed.y**2)
+    
+    text = font.render(f"Speed: {velocidad_kmh:.2f} km/h", True, (255, 255, 255))
+    gameDisplay.blit(text, (10, image_h - 40))
 
     # Vehicle location
     vehicle_location = vehicle.get_transform().location
@@ -236,23 +271,25 @@ while not crashed:
     # Angle between car orientation (yaw) and road tangent (cos(x))
     angle = forward_vector.get_vector_angle(route[pos][0].transform.get_forward_vector())
 
-    # Reward function parameters
-    print(f'Dis target: {round(distance_target, 4)}    Dis center: {round(distance_center, 4)}    Angle(Car,Road): {round(angle, 4)}  Fail: {fail}   Speed: {velocidad_kmh:.2f} kmh')
+    # Env parameters
+    print(f'{lap_count = }   {wp_count = }   distance_target = {distance_target:.3f}    angle(car,road) = {angle:.3f}    {fail = }   speed = {velocidad_kmh:.2f} kmh   {speed_limit = }     traffic light: {vehicle.is_at_traffic_light() } = {vehicle.get_traffic_light().state if vehicle.is_at_traffic_light() else 0}')
 
+    # Traffic Signs
+    if target_wp[0].get_landmarks(50.0, True):
+        for sign in target_wp[0].get_landmarks(50.0, True):
+            # Get specific car lane signs
+            if target_wp[0].road_id == sign.road_id:
+                if sign.name.split("_")[0] == "Speed":
+                    speed_limit = sign.value
+              
     # Graphic draws
     if DEBUG_DRAW:
-        if pos+10 > len(route)-1: 
-            for i in range(pos+1,len(route)):
-                world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
-                                color=carla.Color(r=255, g=0, b=0),
-                                life_time=0.05)
-        else:
-            for i in range(pos+1,pos+11):
-                world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
-                                color=carla.Color(r=255, g=0, b=0),
-                                life_time=0.05)
+        for i in range(pos+1,len(route)):
+            world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                            color=carla.Color(r=255, g=0, b=0),
+                            life_time=0.05)
 
-        world.debug.draw_point(carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
+        world.debug.draw_point(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
                             color=carla.Color(r=0, g=0, b=255),
                             life_time=0.05)
             
@@ -260,7 +297,7 @@ while not crashed:
                             vector_end,
                             life_time=0.04)
 
-        world.debug.draw_arrow(carla.Location(x=closest_wp.transform.location.x, y=closest_wp.transform.location.y, z=0.8),
+        world.debug.draw_arrow(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
                             carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
                             color=carla.Color(r=0, g=0, b=255),
                             life_time=0.04)
