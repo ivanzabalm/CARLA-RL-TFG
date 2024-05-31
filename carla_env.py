@@ -8,18 +8,19 @@ import numpy as np
 from gym import spaces
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
-SHOW_CAMERA = True     # Watch car camera while training
+SHOW_CAMERA = False     # Watch car camera while training
 
 class CarlaEnv(gym.Env):
     def __init__(self):
         self.route = None       # List of waypoint that car must follow
         self.pos = None         # Target waypoint index
         self.target_wp = None   # Target waypoint object
-        self.lap_count = 0      # Circuit laps
+        self.step_counter = 0   # Episodes steps number
         self.wp_count = 0       # Waypoints counter
-        self.wp_ends = [19, 46, 33, 59] # Routes ends (specific waypoint)
-        self.pos_wp_ends = 1    # End waypoints index
-        self.change_route_count = 0 # Route change counter
+        self.point_a_lst = [46, 28, 39]   # List of origin points
+        self.point_b_lst = [48, 0, 71]   # List of destination points
+        self.point_a = None     # Current origin point
+        self.point_b = None     # Current destination point
         self.lane_inv_count = 0 # Lane invasion counter 
         self.params_dict = {}   # Parameters values dictionary for reward function
         self.actors_lst = []    # Actors list refrence to mange instances (vehicle, cameras, sensors)
@@ -29,8 +30,8 @@ class CarlaEnv(gym.Env):
         self.observation_space = spaces.Box(low=0.0, high=1.0,
                                             shape=(240, 320, 3), dtype=np.float32)
 		
-        # Action space (11 for steering: [0-10], 5 for throttle: [0-4])
-        self.action_space = spaces.MultiDiscrete([11,5])
+        # Action space (3 for steering: [0-2], 5 for throttle: [0-4])
+        self.action_space = spaces.MultiDiscrete([3,5])
 
         # Connect to CARLA and config World
         self.client = carla.Client("localhost", 2000)
@@ -38,6 +39,13 @@ class CarlaEnv(gym.Env):
         self.world = self.client.get_world()
         self.world = self.client.load_world('Town02')
         self.world.set_weather(carla.WeatherParameters.Default)
+
+        # CARLA settings
+        self.settings = self.world.get_settings()
+        self.settings.no_rendering_mode = False
+        self.settings.synchronous_mode = False
+        self.settings.fixed_delta_seconds = 0.2
+        self.world.apply_settings(self.settings)
 
 		# Clean CARLA Simulator (To ensure an empty scene)
         for sensor in self.world.get_actors().filter('*sensor*'):
@@ -53,7 +61,7 @@ class CarlaEnv(gym.Env):
         self.spawn_points = self.world.get_map().get_spawn_points()
 
     # Route maker from origin to destination
-    def __route_maker(self, i):
+    def __route_maker(self):
         # Route Planner
         grp = GlobalRoutePlanner(self.world.get_map(), 2)
 
@@ -61,13 +69,19 @@ class CarlaEnv(gym.Env):
         origin = self.vehicle.get_transform().location       
 
         # Route of waypoints (list)
-        route = grp.trace_route(origin, self.spawn_points[self.wp_ends[i]].location)
+        route = grp.trace_route(origin, self.spawn_points[self.point_b_lst[self.point_a_lst.index(self.point_a)]].location)
 
         # Create the route
         self.route = route
+
+        for i in range(len(route)):
+            self.world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                            color=carla.Color(r=255, g=0, b=0),
+                            life_time=90)
             
     # Calculate parameteres values
     def __get_params_values(self):
+
         # Distance from Car to Waypoint target
         self.params_dict["dist_target"] = self.__euclidean_distance(self.vehicle.get_transform().location.x, self.vehicle.get_transform().location.y, self.target_wp[0].transform.location.x, self.target_wp[0].transform.location.y)
                     
@@ -77,61 +91,64 @@ class CarlaEnv(gym.Env):
         # Param 3: Speed
         self.params_dict["speed"] = 3.6 * np.sqrt(self.vehicle.get_velocity().x**2 + self.vehicle.get_velocity().y**2)
 
-        # Param 4: Done (Fail)
+        # Param 4: Fail
         if len(self.collision_hist) > 0 or self.params_dict["dist_target"] > 6.5:
-            self.params_dict["done"] = 1
+            self.params_dict["fail"] = 1
         else:
-            self.params_dict["done"] = 0
+            self.params_dict["fail"] = 0
 
+        # Param 5: Done
+        if not self.params_dict.get("done"):
+            self.params_dict["done"] = 0
+            
     # Define the reward points obtain from agent actions
     def __reward_func(self):
         reward = 0
         done = False
 
-        # Big reward for done a route
-        if self.change_route_count > 0:
-            reward += 50
-            self.change_route_count -= 1
+        # Reward the agent for number obtain of waypoints
+        if self.wp_count % 2 == 0:
+            reward += (self.wp_count/2)
 
-        # Big reward to agent for doing a lap
-        if self.lap_count > 0: 
-            reward += 200
+        # Reward the agent for reach the middle of the route
+        if self.wp_count == len(self.route)/2:
+            reward += 15
 
-        # Reward agent for number obtain of waypoints
-        if self.wp_count > 0:
-            reward += 1
-            self.wp_count -= 1
-
-        # Reward agent for be more centered on the lane
-        if self.params_dict["dist_target"] < 3:
-            reward += 1
-            
-        # Reward agent for drive more straight 
-        if self.params_dict["angle_cr"] < 0.2:
+        # Reward the agent for stay straight
+        if self.params_dict["angle_cr"] < 0.1:
             reward += 1
         else:
-            reward -= 4
-
-        # Reward for appropriate speed (15-35 km/h)
-        if self.params_dict["speed"] > 15 and self.params_dict["speed"] <= 30:
+            reward -= 2
+               
+        # Reward the agent for mantain the correct speed for the lane
+        if self.params_dict["speed"] > 8 and  self.params_dict["speed"] < 15:
             reward += 1
         else:
-            reward -= 4
+            reward -= 2
 
         # Punish the agent for lane invasion
         if self.lane_inv_count > 0:
-            reward -= 10
+            reward -= 2
             self.lane_inv_count -= 1
 
         # Punish the agent if is out of lane
+        if self.params_dict["fail"] == 1:
+            done = True
+            reward -= 200
+
+            # Reset
+            self.__clean_scene()
+            self.params_dict["fail"] =  0
+
+        # Big reward for agent for finish the route
         if self.params_dict["done"] == 1:
-                done = True
-                reward -= 100
+            done = True
+            reward += 100
 
-                # Reset
-                self.__clean_scene()
-                self.params_dict["done"] =  0
-
+            # Reset
+            self.__clean_scene()
+            self.params_dict["done"] =  0
+            
         return reward, done
     
     # Euclidean distance formula between two points 
@@ -173,13 +190,15 @@ class CarlaEnv(gym.Env):
         for actor in self.world.get_actors().filter('*vehicle*'):
             actor.destroy()
         
+        # Choose origin point
+        self.point_a = random.choice(self.point_a_lst)
+        
         # Vehicle instance
-        self.vehicle = self.world.spawn_actor(self.vehicle_bp, self.spawn_points[19])
+        self.vehicle = self.world.spawn_actor(self.vehicle_bp, self.spawn_points[self.point_a])
         self.actors_lst.append(self.vehicle)
 
         # Create initial route
-        self.pos_wp_ends = 1
-        self.__route_maker(self.pos_wp_ends)
+        self.__route_maker()
 
         # Segmentation camera
         sem_cam_bp = self.world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
@@ -220,8 +239,6 @@ class CarlaEnv(gym.Env):
         self.collision_hist = []
         self.lane_inv_count = 0
         self.wp_count = 0
-        self.lap_count = 0
-        self.pos_wp_ends = 1
 
         # Initial car state
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
@@ -232,19 +249,19 @@ class CarlaEnv(gym.Env):
         self.step_counter +=1
             
         if self.step_counter == 1:
-            # Initial route
-            self.__route_maker(self.pos_wp_ends)
+            self.__route_maker()
 
         # Actions selection (by agent)
         sel_steer = actions[0]
         sel_throttle = actions[1]
 
         # Steering actions list
-        actions_steer = [-0.8, -0.4, -0.3, -0.2, 0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.8]
+        actions_steer = [-1, 0, 1]
         steer = actions_steer[sel_steer]
 
         # Throttle actions list
         actions_throttle = [0.25, 0.5, 0.75, 1.0]
+        
 
         if sel_throttle == 0:
             # Brake
@@ -268,25 +285,17 @@ class CarlaEnv(gym.Env):
             self.target_wp = self.route[self.pos]
         else:
             if self.params_dict["dist_target"] <= 2:
-                # In case of reaching the end
-                if self.pos+1 > len(self.route)-1:
-                    if self.pos_wp_ends == 3:
-                        self.pos_wp_ends = 0
-                        self.lap_count += 1
-                    else:
-                        self.pos_wp_ends += 1
 
-                    self.route = self.__route_maker(self.pos_wp_ends)
-                    self.pos = 0
-                    self.change_route_count += 1
+                # In case of reaching the last wp
+                if self.pos == len(self.route)-1:
+                    self.params_dict["done"] = 1
 
                 # Until not reaching it
                 else:
                     self.pos += 1
-
-                self.target_wp = self.route[self.pos]
-                self.wp_count += 1                    
-
+                    self.target_wp = self.route[self.pos]
+                    self.wp_count += 1                    
+    
         # Calculate params values
         self.__get_params_values()
 

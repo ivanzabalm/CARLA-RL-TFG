@@ -23,7 +23,7 @@ def on_collision(event):
 
 # Lane invsion callback
 def on_lane_invasion(event):
-    print(f"\nLane Invasion!\n")
+    print("Lane Invasion!")
 
 # Camera sensor callback, reshapes raw data from camera into 2D RGB and applies to PyGame surface
 def pygame_callback(data, obj):
@@ -50,6 +50,7 @@ class ControlObject(object):
         self._brake = 0
         self._steer = 0
         self._steer_cache = 0
+
         # A carla.VehicleControl object is needed to alter the
         # vehicle's control state
         self._control = carla.VehicleControl()
@@ -101,9 +102,18 @@ def setup_carla_world():
 
 world = setup_carla_world()
 
-# Spawn points
+# Spawn points (Total)
 spawn_points = world.get_map().get_spawn_points()
-start_point = spawn_points[19]
+
+# Point a: Start point of the route (Choosed randomly)
+point_a_lst = [46, 28, 39]
+point_a = random.choice(point_a_lst)
+start_point = spawn_points[point_a]
+
+# Point b: Goal point of the route
+point_b_lst = [48, 0, 71]
+point_b = point_b_lst[point_a_lst.index(point_a)]
+goal_point = spawn_points[point_b]
 
 # Basic vehicle configuration
 def setup_agent_vehicle(start_point):
@@ -147,14 +157,8 @@ lane_invasion_sensor = setup_sensor_lane_invasion()
 # Listen to lane invasion sensor
 lane_invasion_sensor.listen(lambda event: on_lane_invasion(event))
 
-# Target waypoint index
-pos_wp_ends = 1
-
-# List of wp targets
-wp_ends = [19, 46, 33, 59]
-
 # Route maker from car location to destination
-def route_maker(i):
+def route_maker():
     # Route Planner
     grp = GlobalRoutePlanner(world.get_map(), 2)
 
@@ -162,14 +166,13 @@ def route_maker(i):
     origin = vehicle.get_transform().location       
 
     # Route of waypoints (list)
-    route = grp.trace_route(origin, spawn_points[wp_ends[i]].location)
+    route = grp.trace_route(origin, goal_point.location)
     
     return route
 
-route = route_maker(pos_wp_ends)
+route = route_maker()
 
 # Camera config
-
 # Third person camera
 camera_init_trans = carla.Transform(carla.Location(x=-5, z=3), carla.Rotation(pitch=-20))
 camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
@@ -233,15 +236,9 @@ while not crashed:
 
     # When the car come to the target choose a new one
     if distance_target <= 2:
-        if pos+1 > len(route)-1:
-            if pos_wp_ends == 3:
-                pos_wp_ends = 0
-                lap_count += 1
-            else:
-                pos_wp_ends += 1
-            
-            route = route_maker(pos_wp_ends)
-            pos = 0
+        if pos == len(route)-1:
+            # The route is done
+            crashed = True
         else:
             pos += 1
 
@@ -265,7 +262,7 @@ while not crashed:
 
     # Car vector
     forward_vector = vehicle.get_transform().get_forward_vector()
-    scaled_forward_vector = forward_vector * 5.0
+    scaled_forward_vector = forward_vector * 4
     vector_end = vehicle_location + carla.Location(x=scaled_forward_vector.x, y=scaled_forward_vector.y, z=0.0)
 
     # Angle between car orientation (yaw) and road tangent (cos(x))
@@ -277,6 +274,7 @@ while not crashed:
     # Traffic Signs
     if target_wp[0].get_landmarks(50.0, True):
         for sign in target_wp[0].get_landmarks(50.0, True):
+            
             # Get specific car lane signs
             if target_wp[0].road_id == sign.road_id:
                 if sign.name.split("_")[0] == "Speed":
@@ -284,19 +282,21 @@ while not crashed:
               
     # Graphic draws
     if DEBUG_DRAW:
-        for i in range(pos+1,len(route)):
-            world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
-                            color=carla.Color(r=255, g=0, b=0),
-                            life_time=0.05)
-
-        world.debug.draw_point(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
-                            color=carla.Color(r=0, g=0, b=255),
-                            life_time=0.05)
-            
+        if pos+8 < len(route):
+            for i in range(pos, pos+8):
+                world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                                color=carla.Color(r=255, g=0, b=0),
+                                life_time=0.05)   
+        else:
+            for i in range(pos, len(route)):
+                world.debug.draw_point(carla.Location(x=route[i][0].transform.location.x, y=route[i][0].transform.location.y, z=0.8),
+                                color=carla.Color(r=255, g=0, b=0),
+                                life_time=0.05)
+                
         world.debug.draw_arrow(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
                             vector_end,
                             life_time=0.04)
-
+                        
         world.debug.draw_arrow(carla.Location(x=vehicle_location.x, y=vehicle_location.y, z=0.8),
                             carla.Location(x=target_wp[0].transform.location.x, y=target_wp[0].transform.location.y, z=0.8),
                             color=carla.Color(r=0, g=0, b=255),
@@ -336,6 +336,9 @@ while not crashed:
                     gameDisplay.fill((0, 0, 0))
                     gameDisplay.blit(renderObject.surface, (0, 0))
                     pygame.display.flip()
+
+# Close window
+pygame.quit()
 
 # Delete scene elements
 for actor in world.get_actors().filter('*vehicle*'):
