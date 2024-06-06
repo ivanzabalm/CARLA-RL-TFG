@@ -211,9 +211,6 @@ route_draw = route
 # Waypoint counter
 wp_count = -1
 
-# Lap counter
-lap_count = 0
-
 # Case of collision or lose wp target
 fail = 0
 
@@ -269,7 +266,7 @@ while not crashed:
     angle = forward_vector.get_vector_angle(route[pos][0].transform.get_forward_vector())
 
     # Env parameters
-    print(f'{lap_count = }   {wp_count = }   distance_target = {distance_target:.3f}    angle(car,road) = {angle:.3f}    {fail = }   speed = {velocidad_kmh:.2f} kmh   {speed_limit = }     traffic light: {vehicle.is_at_traffic_light() } = {vehicle.get_traffic_light().state if vehicle.is_at_traffic_light() else 0}')
+    print(f'{wp_count = }   distance_target = {distance_target:.3f}    angle(car,road) = {angle:.3f}    {fail = }   speed = {velocidad_kmh:.2f} kmh   {speed_limit = }     traffic light: {vehicle.is_at_traffic_light() } = {vehicle.get_traffic_light().state if vehicle.is_at_traffic_light() else 0}')
 
     # Traffic Signs
     if target_wp[0].get_landmarks(50.0, True):

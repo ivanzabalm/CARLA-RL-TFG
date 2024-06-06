@@ -8,7 +8,7 @@ import numpy as np
 from gym import spaces
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
-SHOW_CAMERA = False     # Watch car camera while training
+SHOW_CAMERA = True     # Watch car camera while training
 
 class CarlaEnv(gym.Env):
     def __init__(self):
@@ -83,7 +83,8 @@ class CarlaEnv(gym.Env):
     def __get_params_values(self):
 
         # Distance from Car to Waypoint target
-        self.params_dict["dist_target"] = self.__euclidean_distance(self.vehicle.get_transform().location.x, self.vehicle.get_transform().location.y, self.target_wp[0].transform.location.x, self.target_wp[0].transform.location.y)
+        self.params_dict["dist_target"] = self.__euclidean_distance(self.vehicle.get_transform().location.x, self.vehicle.get_transform().location.y,
+                                                                    self.target_wp[0].transform.location.x, self.target_wp[0].transform.location.y)
                     
         # Param 2: Angle between Car vetor and Road vector
         self.params_dict["angle_cr"] = self.vehicle.get_transform().get_forward_vector().get_vector_angle(self.route[self.pos][0].transform.get_forward_vector())

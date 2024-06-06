@@ -8,7 +8,7 @@ from stable_baselines3 import A2C
 NUM_EPISODES = 5
 
 models_dir = "../models/A2C/"
-model_path = f"{models_dir}/A2C-Agent-500K.zip"
+model_path = f"{models_dir}/A2C-Agent-700K.zip"
 
 # Start the enviroment 
 carla_env = CarlaEnv()
